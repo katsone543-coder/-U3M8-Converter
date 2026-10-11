@@ -171,6 +171,17 @@ fn video_stream(value: &Value) -> Option<&Value> {
         .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
 }
 
+fn unreadable_video_error(index: usize, encrypted: bool) -> String {
+    if encrypted {
+        format!(
+            "第 {} 个片段无法解密或读取视频流，请检查 AES-128 密钥和片段文件。",
+            index + 1
+        )
+    } else {
+        format!("第 {} 个片段没有可读取的视频流。", index + 1)
+    }
+}
+
 async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInfo, String> {
     let playlist = parse_playlist(path)?;
     let key_hex = playlist
@@ -199,7 +210,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
         let streams = data
             .get("streams")
             .and_then(Value::as_array)
-            .ok_or_else(|| format!("第 {} 个片段缺少媒体流。", index + 1))?;
+            .ok_or_else(|| unreadable_video_error(index, key_hex.is_some()))?;
         let videos: Vec<_> = streams
             .iter()
             .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
@@ -209,7 +220,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
             .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
             .collect();
         if videos.is_empty() {
-            return Err(format!("第 {} 个片段没有可读取的视频流。", index + 1));
+            return Err(unreadable_video_error(index, key_hex.is_some()));
         }
         if videos.len() > 1 || audios.len() > 1 {
             return Err("视频包含多个视频或音轨，当前版本暂不支持。".into());
@@ -237,14 +248,14 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
         }
         expected_audio = Some(audio);
         let stream = video_stream(&data)
-            .ok_or_else(|| format!("第 {} 个片段没有可读取的视频流。", index + 1))?;
+            .ok_or_else(|| unreadable_video_error(index, key_hex.is_some()))?;
         let packets = stream
             .get("nb_read_packets")
             .and_then(Value::as_str)
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
         if packets == 0 {
-            return Err(format!("第 {} 个片段没有可读取的视频帧。", index + 1));
+            return Err(unreadable_video_error(index, key_hex.is_some()));
         }
         let codec = stream
             .get("codec_name")
