@@ -63,12 +63,15 @@ impl InspectionCache {
     }
 
     fn is_current(&self, input: &Path) -> bool {
-        if input != Path::new(&self.info.input_path)
-            || fs::read(input).ok().as_deref() != Some(self.playlist_bytes.as_slice())
+        let Ok(canonical_input) = input.canonicalize() else {
+            return false;
+        };
+        if canonical_input != Path::new(&self.info.input_path)
+            || fs::read(&canonical_input).ok().as_deref() != Some(self.playlist_bytes.as_slice())
         {
             return false;
         }
-        let Ok(playlist) = parse_playlist(input) else {
+        let Ok(playlist) = parse_playlist(&canonical_input) else {
             return false;
         };
         if playlist.segments.len() != self.segments.len()
