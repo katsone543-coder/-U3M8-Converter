@@ -297,6 +297,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
         (0..playlist.segments.len()).map(|_| None).collect();
     let mut next = 0;
     let mut completed = 0;
+    let mut next_checked = 0;
     let mut ticker = interval(Duration::from_millis(100));
     while completed < playlist.segments.len() {
         while next < playlist.segments.len() && tasks.len() < PARALLEL_PROBES {
@@ -325,6 +326,12 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
                     .map_err(|_| "视频检测任务异常终止。".to_string())?;
                 results[index] = Some(result);
                 completed += 1;
+                while let Some(Some(result)) = results.get(next_checked) {
+                    if let Err(error) = result {
+                        return Err(format!("第 {} 个片段：{error}", next_checked + 1));
+                    }
+                    next_checked += 1;
+                }
             }
         }
     }
