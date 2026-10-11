@@ -1,6 +1,6 @@
-# M3U8 转换器 V0.1
+# M3U8 转换器 V0.2
 
-基于 Tauri 2、React、TypeScript 和随应用打包的 FFmpeg / FFprobe。仅处理完整的本地 `.m3u8` 媒体播放列表及其相对路径 `.ts` 片段，支持子目录。转换使用 `-c copy`，验证 MP4 后才创建正式输出文件；原始文件不会修改。
+基于 Tauri 2、React、TypeScript 和随应用打包的 FFmpeg / FFprobe。处理完整的本地 `.m3u8` 媒体播放列表及其相对路径 `.ts` 片段，支持子目录和单个本地 AES-128 密钥。转换使用 `-c copy`，验证 MP4 后才创建正式输出文件；原始文件不会修改。
 
 ## 本地开发
 
@@ -31,7 +31,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
 
-Rust 测试使用真实 FFmpeg 生成 TS 文件，检查成功转换、缺失与损坏片段、取消进程、拒绝覆盖和不支持的播放列表结构。
+Rust 测试使用真实 FFmpeg 生成普通及 AES-128 加密的 TS 文件，检查成功转换、错误密钥、缺失与损坏片段、取消进程、拒绝覆盖和不支持的播放列表结构。
 
 ## macOS 打包
 
@@ -43,8 +43,8 @@ bash scripts/build-macos.sh
 
 脚本会安装依赖、准备本机架构的 FFmpeg / FFprobe、生成 `.icns` 图标、运行测试，然后构建未签名 `.dmg`。GitHub Actions 工作流可在 Apple Silicon 和 Intel macOS 运行相同步骤。未签名应用在其他 Mac 上打开时会触发系统安全提示；正式分发仍需 Apple Developer 签名与公证。
 
-## V0.1 支持范围
+## V0.2 支持范围
 
-支持有 `#EXT-X-ENDLIST` 的本地 TS 媒体播放列表。加密、在线 URI、主播放列表、字节范围、fMP4、复杂音轨及不连续片段会显示明确错误。输出已存在时要求另选文件名。
+支持有 `#EXT-X-ENDLIST` 的本地 TS 媒体播放列表，以及一个本地 16 字节 AES-128 密钥。可使用显式 IV，或按媒体序号生成 IV。会逐片解密检测，片段较多时预检可能需要数十秒。密钥轮换、SAMPLE-AES/DRM、在线 URI、主播放列表、字节范围、fMP4、复杂音轨及不连续片段会显示明确错误。输出已存在时要求另选文件名。
 
 FFmpeg 二进制由 `ffmpeg-static` 提供，具体许可与来源见 [第三方说明](THIRD_PARTY_NOTICES.md)。发布前应核对对应二进制构建的许可和源码提供义务。

@@ -1,6 +1,6 @@
 [package]
 name = "m3u8-converter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local M3U8 to MP4 converter"
 authors = ["M3U8 Converter contributors"]
 edition = "2021"

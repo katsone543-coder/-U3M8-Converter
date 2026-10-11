@@ -14,6 +14,7 @@ type MediaInfo = {
   width: number;
   height: number;
   segmentCount: number;
+  encrypted: boolean;
 };
 type Progress = { id: string; percent: number; seconds: number };
 
@@ -166,7 +167,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand-mark"><FilmIcon size={23} /></div>
         <div className="brand-copy"><strong>M3U8 转换器</strong><span>本地视频，安心转换</span></div>
-        <span className="version">V0.1</span>
+        <span className="version">V0.2</span>
       </header>
 
       <main className="main-content">
@@ -180,7 +181,7 @@ export default function App() {
           <div className="drop-symbol"><FilmIcon size={34} /></div>
           <div className="drop-copy">
             <h2>{info ? info.fileName : phase === 'inspecting' ? '正在检查视频片段…' : '拖入 M3U8 文件'}</h2>
-            <p>{info ? '文件检查完成，可以开始转换' : '或从电脑中选择本地 .m3u8 播放列表'}</p>
+            <p>{info ? (info.encrypted ? '本地密钥和视频片段检查完成，可以开始转换' : '文件检查完成，可以开始转换') : '或从电脑中选择本地 .m3u8 播放列表'}</p>
           </div>
           <button type="button" className="button button-secondary" onClick={chooseFile} disabled={working || phase === 'inspecting'}>
             {info ? '更换文件' : '选择文件'}
@@ -192,7 +193,7 @@ export default function App() {
           <div className="stats">
             <div><span className="stat-label">播放列表时长</span><strong>{formatDuration(info.durationSeconds)}</strong></div>
             <div><span className="stat-label">视频分辨率</span><strong>{info.width} × {info.height}</strong></div>
-            <div><span className="stat-label">转换方式</span><strong>无损封装</strong></div>
+            <div><span className="stat-label">转换方式</span><strong>{info.encrypted ? 'AES-128 解密＋无损封装' : '无损封装'}</strong></div>
           </div>
           <div className="separator" />
           <div className="output-heading"><label htmlFor="output-path">保存位置</label><span>验证成功后才会保存为 MP4</span></div>
@@ -205,7 +206,7 @@ export default function App() {
         {working && <section className="progress-card" aria-live="polite">
           <div className="progress-header"><strong>{phase === 'cancelling' ? '正在取消…' : '正在转换视频…'}</strong><span>{progress}%</span></div>
           <div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
-          <p>正在无损封装片段，完成后会自动验证文件。</p>
+          <p>{info?.encrypted ? '正在使用本地密钥解密并无损封装，完成后会自动验证文件。' : '正在无损封装片段，完成后会自动验证文件。'}</p>
         </section>}
 
         {error && <div className="message error" role="alert"><span>!</span>{error}</div>}

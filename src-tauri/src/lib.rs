@@ -1,6 +1,6 @@
 mod playlist;
 
-use playlist::parse_playlist;
+use playlist::{parse_playlist, Playlist};
 use serde::Serialize;
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
@@ -26,6 +26,7 @@ struct MediaInfo {
     width: u64,
     height: u64,
     segment_count: usize,
+    encrypted: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -36,6 +37,7 @@ struct ProgressEvent {
     seconds: f64,
 }
 
+#[cfg(debug_assertions)]
 fn target_triple() -> &'static str {
     if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "x86_64-pc-windows-msvc"
@@ -88,10 +90,12 @@ fn tool_path(name: &str) -> Result<PathBuf, String> {
     Err(format!("缺少随应用分发的 {name} 程序，请重新安装应用。"))
 }
 
+const PROBE_ENTRIES: &str = "format=duration:stream=codec_type,codec_name,width,height,channels,sample_rate,nb_read_packets";
+
 async fn probe(path: &Path, count_packets: bool) -> Result<Value, String> {
     let binary = tool_path("ffprobe")?;
     let mut command = Command::new(binary);
-    command.args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,channels,sample_rate,nb_read_packets", "-of", "json"]);
+    command.args(["-v", "error", "-show_entries", PROBE_ENTRIES, "-of", "json"]);
     if count_packets {
         command.arg("-count_packets");
     }
@@ -106,6 +110,59 @@ async fn probe(path: &Path, count_packets: bool) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|_| "FFprobe 返回了无效的视频信息。".to_string())
 }
 
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn probe_encrypted_segment(
+    playlist: &Playlist,
+    segment: &Path,
+    index: usize,
+    key_hex: &str,
+) -> Result<Value, String> {
+    let encryption = playlist
+        .encryption
+        .as_ref()
+        .ok_or("播放列表缺少密钥信息。")?;
+    let base = playlist
+        .path
+        .parent()
+        .ok_or("无法确定播放列表所在文件夹。")?;
+    let relative = segment
+        .strip_prefix(base)
+        .map_err(|_| "视频片段超出播放列表文件夹。".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let iv_hex = hex_bytes(&encryption.iv_for_segment(index));
+    let output = Command::new(tool_path("ffprobe")?)
+        .current_dir(ffmpeg_path(base))
+        .args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "file,crypto",
+            "-decryption_key",
+            key_hex,
+            "-decryption_iv",
+            &iv_hex,
+            "-f",
+            "mpegts",
+            "-count_packets",
+            "-show_entries",
+            PROBE_ENTRIES,
+            "-of",
+            "json",
+        ])
+        .arg(format!("crypto:{relative}"))
+        .output()
+        .await
+        .map_err(|_| "无法启动视频检测程序，请重新安装应用。".to_string())?;
+    if !output.status.success() {
+        return Err("AES-128 密钥错误，或视频片段无法解密/读取。".into());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "FFprobe 返回了无效的视频信息。".to_string())
+}
+
 fn video_stream(value: &Value) -> Option<&Value> {
     value
         .get("streams")?
@@ -116,15 +173,29 @@ fn video_stream(value: &Value) -> Option<&Value> {
 
 async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInfo, String> {
     let playlist = parse_playlist(path)?;
+    let key_hex = playlist
+        .encryption
+        .as_ref()
+        .map(|encryption| -> Result<String, String> {
+            let bytes = fs::read(&encryption.key_path)
+                .map_err(|_| "无法读取 AES-128 密钥文件。".to_string())?;
+            if bytes.len() != 16 {
+                return Err("AES-128 密钥文件必须恰好为 16 字节。".into());
+            }
+            Ok(hex_bytes(&bytes))
+        })
+        .transpose()?;
     let mut expected_video: Option<(String, u64, u64)> = None;
     let mut expected_audio: Option<Option<(String, u64, String)>> = None;
     for (index, segment) in playlist.segments.iter().enumerate() {
         if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             return Err("转换已取消。".into());
         }
-        let data = probe(segment, true)
-            .await
-            .map_err(|error| format!("第 {} 个片段：{error}", index + 1))?;
+        let data = match key_hex.as_deref() {
+            Some(key) => probe_encrypted_segment(&playlist, segment, index, key).await,
+            None => probe(segment, true).await,
+        }
+        .map_err(|error| format!("第 {} 个片段：{error}", index + 1))?;
         let streams = data
             .get("streams")
             .and_then(Value::as_array)
@@ -141,7 +212,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
             return Err(format!("第 {} 个片段没有可读取的视频流。", index + 1));
         }
         if videos.len() > 1 || audios.len() > 1 {
-            return Err("视频包含多个视频或音轨，V0.1 暂不支持。".into());
+            return Err("视频包含多个视频或音轨，当前版本暂不支持。".into());
         }
         let audio = audios.first().map(|stream| {
             (
@@ -162,7 +233,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
             .as_ref()
             .is_some_and(|expected| expected != &audio)
         {
-            return Err("视频片段的音频格式不一致，V0.1 暂不支持。".into());
+            return Err("视频片段的音频格式不一致，当前版本暂不支持。".into());
         }
         expected_audio = Some(audio);
         let stream = video_stream(&data)
@@ -190,7 +261,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
             .as_ref()
             .is_some_and(|expected| expected != &current)
         {
-            return Err("视频片段的编码或分辨率不一致，V0.1 暂不支持。".into());
+            return Err("视频片段的编码或分辨率不一致，当前版本暂不支持。".into());
         }
         expected_video = Some(current);
     }
@@ -210,6 +281,7 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
         width,
         height,
         segment_count: playlist.segments.len(),
+        encrypted: playlist.encryption.is_some(),
     })
 }
 
@@ -270,6 +342,7 @@ async fn convert<F: Fn(ProgressEvent)>(
         &temp,
         id,
         info.duration_seconds,
+        info.encrypted,
         cancelled,
     )
     .await;
@@ -284,7 +357,7 @@ async fn convert<F: Fn(ProgressEvent)>(
                     .and_then(Value::as_str)
                     .and_then(|value| value.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                let tolerance = (info.duration_seconds * 0.1).max(3.0);
+                let tolerance = 3.0;
                 if actual_duration <= 0.0 || actual_duration + tolerance < info.duration_seconds {
                     Err("生成的 MP4 时长异常，已删除临时文件。".into())
                 } else if stream.get("width").and_then(Value::as_u64) != Some(info.width)
@@ -316,21 +389,32 @@ async fn convert_to_temp<F: Fn(ProgressEvent)>(
     temp: &Path,
     id: &str,
     duration: f64,
+    encrypted: bool,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let binary = tool_path("ffmpeg")?;
-    let mut child = Command::new(binary)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-y",
-            "-protocol_whitelist",
-            "file,crypto",
-            "-i",
-        ])
-        .arg(ffmpeg_path(input))
+    let mut command = Command::new(binary);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-protocol_whitelist",
+        "file,crypto",
+    ]);
+    if encrypted {
+        let base = input.parent().ok_or("无法确定播放列表所在文件夹。")?;
+        command.current_dir(ffmpeg_path(base));
+        command.args(["-allowed_extensions", "ALL"]);
+    }
+    command
+        .arg("-i")
+        .arg(if encrypted {
+            input.file_name().ok_or("播放列表文件名无效。")?.into()
+        } else {
+            ffmpeg_path(input)
+        })
         .args([
             "-map",
             "0:v:0",
@@ -346,7 +430,8 @@ async fn convert_to_temp<F: Fn(ProgressEvent)>(
             "-f",
             "mp4",
         ])
-        .arg(ffmpeg_path(temp))
+        .arg(ffmpeg_path(temp));
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -384,8 +469,7 @@ async fn convert_to_temp<F: Fn(ProgressEvent)>(
                 }
                 if let Some(status) = child.try_wait().map_err(|_| "转换进程异常终止。".to_string())? {
                     let error_text = stderr_reader.await.unwrap_or_default();
-                    if status.success() { return Ok(()); }
-                    let _ = error_text;
+                    if status.success() && error_text.trim().is_empty() { return Ok(()); }
                     return Err("转换失败，请检查视频片段的编码和完整性。".into());
                 }
             }
@@ -488,6 +572,174 @@ mod tests {
         (directory, playlist)
     }
 
+    fn encrypted_fixture(explicit_iv: bool) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let parts = directory.path().join("parts");
+        fs::create_dir(&parts).unwrap();
+        fs::write(parts.join("0.key"), [0x11u8; 16]).unwrap();
+        for (index, color) in ["red", "blue"].iter().enumerate() {
+            let raw = parts.join(format!("raw{index}.ts"));
+            make_segment(&raw, color);
+            let iv = if explicit_iv { 0 } else { 7 + index as u128 };
+            let result = std::process::Command::new(tool_path("ffmpeg").unwrap())
+                .current_dir(&parts)
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+                .arg(format!("raw{index}.ts"))
+                .args([
+                    "-c",
+                    "copy",
+                    "-f",
+                    "mpegts",
+                    "-encryption_key",
+                    "11111111111111111111111111111111",
+                    "-encryption_iv",
+                    &format!("{iv:032x}"),
+                ])
+                .arg(format!("crypto:{index:03}.ts"))
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            fs::remove_file(raw).unwrap();
+        }
+        let iv = if explicit_iv {
+            ",IV=0x00000000000000000000000000000000"
+        } else {
+            ""
+        };
+        let playlist = directory.path().join("加密样片.m3u8");
+        fs::write(
+            &playlist,
+            format!(
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA-SEQUENCE:7\n#EXT-X-KEY:METHOD=AES-128,URI=\"parts/0.key\"{iv}\n#EXTINF:1,\nparts/000.ts\n#EXTINF:1,\nparts/001.ts\n#EXT-X-ENDLIST\n"
+            ),
+        )
+        .unwrap();
+        (directory, playlist)
+    }
+
+    #[tokio::test]
+    async fn converts_local_aes128_with_explicit_and_sequence_ivs() {
+        for explicit_iv in [true, false] {
+            let (directory, playlist) = encrypted_fixture(explicit_iv);
+            let info = inspect(&playlist, None).await.unwrap();
+            assert!(info.encrypted);
+            assert_eq!((info.width, info.height, info.segment_count), (320, 180, 2));
+            let output = directory.path().join("解密结果.mp4");
+            convert(
+                &|_| {},
+                &playlist,
+                &output,
+                "encrypted-test",
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            let result = probe(&output, false).await.unwrap();
+            assert!(video_stream(&result).is_some());
+            assert!(output.metadata().unwrap().len() > 1000);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_key_and_corrupt_ciphertext_without_mp4() {
+        let (directory, playlist) = encrypted_fixture(true);
+        let key = directory.path().join("parts/0.key");
+        let output = directory.path().join("结果.mp4");
+        fs::write(&key, [0x22u8; 16]).unwrap();
+        let error = convert(
+            &|_| {},
+            &playlist,
+            &output,
+            "bad-key",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("解密"));
+        assert!(!output.exists());
+        fs::write(&key, [0x11u8; 16]).unwrap();
+        fs::write(directory.path().join("parts/001.ts"), b"broken ciphertext").unwrap();
+        assert!(convert(
+            &|_| {},
+            &playlist,
+            &output,
+            "bad-segment",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .is_err());
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn cancels_a_running_aes128_conversion() {
+        let (directory, playlist) = encrypted_fixture(true);
+        let repeated = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"parts/0.key\",IV=0x00000000000000000000000000000000\n".to_string()
+            + &"#EXTINF:1,\nparts/000.ts\n".repeat(1000)
+            + "#EXT-X-ENDLIST\n";
+        fs::write(&playlist, repeated).unwrap();
+        let temp = directory.path().join("pending.partial.mp4");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            signal.store(true, Ordering::SeqCst);
+        });
+        let result = convert_to_temp(
+            &|_| {},
+            &playlist,
+            &temp,
+            "encrypted-cancel",
+            1000.0,
+            true,
+            cancelled,
+        )
+        .await;
+        cancel_task.await.unwrap();
+        assert!(result.unwrap_err().contains("取消"));
+        assert!(!directory.path().join("结果.mp4").exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "需要通过 M3U8_TEST_INPUT 指定本地播放列表"]
+    async fn inspects_external_playlist_from_environment() {
+        let input = std::env::var_os("M3U8_TEST_INPUT").expect("M3U8_TEST_INPUT is required");
+        let info = inspect(Path::new(&input), None).await.unwrap();
+        println!(
+            "segments={} duration={} resolution={}x{} encrypted={}",
+            info.segment_count, info.duration_seconds, info.width, info.height, info.encrypted
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "需要通过 M3U8_TEST_INPUT 和 M3U8_TEST_OUTPUT_DIR 指定本地测试路径"]
+    async fn converts_external_playlist_from_environment() {
+        let input = std::env::var_os("M3U8_TEST_INPUT").expect("M3U8_TEST_INPUT is required");
+        let directory =
+            std::env::var_os("M3U8_TEST_OUTPUT_DIR").expect("M3U8_TEST_OUTPUT_DIR is required");
+        let output =
+            PathBuf::from(directory).join(format!("aes-validation-{}.mp4", uuid::Uuid::new_v4()));
+        let saved = convert(
+            &|_| {},
+            Path::new(&input),
+            &output,
+            "external-test",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved, output.to_string_lossy());
+        let size = output.metadata().unwrap().len();
+        let data = probe(&output, false).await.unwrap();
+        assert!(video_stream(&data).is_some());
+        println!("verified_mp4_bytes={size}");
+        fs::remove_file(output).unwrap();
+    }
+
     #[tokio::test]
     async fn converts_real_ts_and_verifies_mp4() {
         let (directory, playlist) = fixture();
@@ -573,7 +825,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
             signal.store(true, Ordering::SeqCst);
         });
-        let result = convert_to_temp(&|_| {}, &playlist, &temp, "test", 500.0, cancelled).await;
+        let result =
+            convert_to_temp(&|_| {}, &playlist, &temp, "test", 500.0, false, cancelled).await;
         cancel_task.await.unwrap();
         assert!(result.unwrap_err().contains("取消"));
         assert!(!directory.path().join("结果.mp4").exists());
