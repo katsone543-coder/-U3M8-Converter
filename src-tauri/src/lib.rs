@@ -8,15 +8,91 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use tokio::task::JoinSet;
 use tokio::time::{interval, Duration};
 
 #[derive(Default)]
 struct ConversionState(Mutex<Option<Arc<AtomicBool>>>);
 
-#[derive(Serialize)]
+#[derive(Default)]
+struct InspectionState(Mutex<Option<InspectionCache>>);
+
+struct FileStamp {
+    path: PathBuf,
+    length: u64,
+    modified: SystemTime,
+}
+
+struct InspectionCache {
+    info: MediaInfo,
+    playlist_bytes: Vec<u8>,
+    key_bytes: Option<Vec<u8>>,
+    key_path: Option<PathBuf>,
+    segments: Vec<FileStamp>,
+}
+
+impl InspectionCache {
+    fn capture(info: MediaInfo) -> Option<Self> {
+        let playlist = parse_playlist(Path::new(&info.input_path)).ok()?;
+        let playlist_bytes = fs::read(&playlist.path).ok()?;
+        let key_path = playlist.encryption.as_ref().map(|value| value.key_path.clone());
+        let key_bytes = key_path.as_ref().map(fs::read).transpose().ok()?;
+        let segments = playlist
+            .segments
+            .into_iter()
+            .map(|path| {
+                let metadata = fs::metadata(&path).ok()?;
+                Some(FileStamp {
+                    path,
+                    length: metadata.len(),
+                    modified: metadata.modified().ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            info,
+            playlist_bytes,
+            key_bytes,
+            key_path,
+            segments,
+        })
+    }
+
+    fn is_current(&self, input: &Path) -> bool {
+        if input != Path::new(&self.info.input_path)
+            || fs::read(input).ok().as_deref() != Some(self.playlist_bytes.as_slice())
+        {
+            return false;
+        }
+        let Ok(playlist) = parse_playlist(input) else {
+            return false;
+        };
+        if playlist.segments.len() != self.segments.len()
+            || playlist.encryption.as_ref().map(|value| &value.key_path) != self.key_path.as_ref()
+            || self.key_path.as_ref().map(fs::read).transpose().ok().as_ref()
+                != Some(&self.key_bytes)
+        {
+            return false;
+        }
+        playlist
+            .segments
+            .iter()
+            .zip(&self.segments)
+            .all(|(path, stamp)| {
+                path == &stamp.path
+                    && fs::metadata(path).is_ok_and(|metadata| {
+                        metadata.len() == stamp.length
+                            && metadata.modified().ok() == Some(stamp.modified)
+                    })
+            })
+    }
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MediaInfo {
     input_path: String,
@@ -92,6 +168,7 @@ fn tool_path(name: &str) -> Result<PathBuf, String> {
 
 fn tool_command(name: &str) -> Result<Command, String> {
     let mut command = Command::new(tool_path(name)?);
+    command.kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     Ok(command)
@@ -201,7 +278,7 @@ fn unreadable_video_error(index: usize, encrypted: bool) -> String {
 }
 
 async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInfo, String> {
-    let playlist = parse_playlist(path)?;
+    let playlist = Arc::new(parse_playlist(path)?);
     let key_hex = playlist
         .encryption
         .as_ref()
@@ -214,17 +291,49 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
             Ok(hex_bytes(&bytes))
         })
         .transpose()?;
+    const PARALLEL_PROBES: usize = 4;
+    let mut tasks = JoinSet::new();
+    let mut results: Vec<Option<Result<Value, String>>> =
+        (0..playlist.segments.len()).map(|_| None).collect();
+    let mut next = 0;
+    let mut completed = 0;
+    let mut ticker = interval(Duration::from_millis(100));
+    while completed < playlist.segments.len() {
+        while next < playlist.segments.len() && tasks.len() < PARALLEL_PROBES {
+            let current = next;
+            let playlist = playlist.clone();
+            let key = key_hex.clone();
+            tasks.spawn(async move {
+                let segment = &playlist.segments[current];
+                let result = match key.as_deref() {
+                    Some(key) => probe_encrypted_segment(&playlist, segment, current, key).await,
+                    None => probe(segment, true).await,
+                };
+                (current, result)
+            });
+            next += 1;
+        }
+        tokio::select! {
+            _ = ticker.tick() => {
+                if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    return Err("转换已取消。".into());
+                }
+            }
+            result = tasks.join_next() => {
+                let (index, result) = result
+                    .ok_or("视频检测任务意外停止。")?
+                    .map_err(|_| "视频检测任务异常终止。".to_string())?;
+                results[index] = Some(result);
+                completed += 1;
+            }
+        }
+    }
     let mut expected_video: Option<(String, u64, u64)> = None;
     let mut expected_audio: Option<Option<(String, u64, String)>> = None;
-    for (index, segment) in playlist.segments.iter().enumerate() {
-        if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-            return Err("转换已取消。".into());
-        }
-        let data = match key_hex.as_deref() {
-            Some(key) => probe_encrypted_segment(&playlist, segment, index, key).await,
-            None => probe(segment, true).await,
-        }
-        .map_err(|error| format!("第 {} 个片段：{error}", index + 1))?;
+    for (index, result) in results.into_iter().enumerate() {
+        let data = result
+            .ok_or("视频检测结果不完整。")?
+            .map_err(|error| format!("第 {} 个片段：{error}", index + 1))?;
         let streams = data
             .get("streams")
             .and_then(Value::as_array)
@@ -315,8 +424,18 @@ async fn inspect(path: &Path, cancelled: Option<&AtomicBool>) -> Result<MediaInf
 }
 
 #[tauri::command]
-async fn inspect_playlist(path: String) -> Result<MediaInfo, String> {
-    inspect(Path::new(&path), None).await
+async fn inspect_playlist(
+    path: String,
+    state: tauri::State<'_, InspectionState>,
+) -> Result<MediaInfo, String> {
+    if let Ok(mut cache) = state.0.lock() {
+        *cache = None;
+    }
+    let info = inspect(Path::new(&path), None).await?;
+    if let Ok(mut cache) = state.0.lock() {
+        *cache = InspectionCache::capture(info.clone());
+    }
+    Ok(info)
 }
 
 fn seconds_from_timestamp(value: &str) -> Option<f64> {
@@ -331,6 +450,7 @@ fn seconds_from_timestamp(value: &str) -> Option<f64> {
     )
 }
 
+#[cfg(test)]
 async fn convert<F: Fn(ProgressEvent)>(
     report: &F,
     input: &Path,
@@ -338,7 +458,21 @@ async fn convert<F: Fn(ProgressEvent)>(
     id: &str,
     cancelled: Arc<AtomicBool>,
 ) -> Result<String, String> {
-    let info = inspect(input, Some(&cancelled)).await?;
+    convert_prechecked(report, input, output, id, cancelled, None).await
+}
+
+async fn convert_prechecked<F: Fn(ProgressEvent)>(
+    report: &F,
+    input: &Path,
+    output: &Path,
+    id: &str,
+    cancelled: Arc<AtomicBool>,
+    cached_info: Option<MediaInfo>,
+) -> Result<String, String> {
+    let info = match cached_info {
+        Some(info) => info,
+        None => inspect(input, Some(&cancelled)).await?,
+    };
     if cancelled.load(Ordering::SeqCst) {
         return Err("转换已取消。".into());
     }
@@ -509,6 +643,7 @@ async fn convert_to_temp<F: Fn(ProgressEvent)>(
 async fn start_conversion(
     app: tauri::AppHandle,
     state: tauri::State<'_, ConversionState>,
+    inspection: tauri::State<'_, InspectionState>,
     input_path: String,
     output_path: String,
     id: String,
@@ -521,7 +656,13 @@ async fn start_conversion(
         }
         *running = Some(flag.clone());
     }
-    let result = convert(
+    let cached_info = inspection.0.lock().ok().and_then(|cache| {
+        cache
+            .as_ref()
+            .filter(|value| value.is_current(Path::new(&input_path)))
+            .map(|value| value.info.clone())
+    });
+    let result = convert_prechecked(
         &|event| {
             let _ = app.emit("conversion-progress", event);
         },
@@ -529,6 +670,7 @@ async fn start_conversion(
         Path::new(&output_path),
         &id,
         flag,
+        cached_info,
     )
     .await;
     if let Ok(mut running) = state.0.lock() {
@@ -551,6 +693,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(ConversionState::default())
+        .manage(InspectionState::default())
         .invoke_handler(tauri::generate_handler![
             inspect_playlist,
             start_conversion,
@@ -563,6 +706,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn make_segment(path: &Path, color: &str) {
         let result = std::process::Command::new(tool_path("ffmpeg").unwrap())
@@ -670,6 +814,39 @@ mod tests {
             assert!(video_stream(&result).is_some());
             assert!(output.metadata().unwrap().len() > 1000);
         }
+    }
+
+    #[tokio::test]
+    async fn cached_inspection_is_reused_only_while_sources_are_unchanged() {
+        let (directory, playlist) = encrypted_fixture(true);
+        let info = inspect(&playlist, None).await.unwrap();
+        let cache = InspectionCache::capture(info.clone()).unwrap();
+        assert!(cache.is_current(&playlist));
+
+        let output = directory.path().join("缓存结果.mp4");
+        convert_prechecked(
+            &|_| {},
+            &playlist,
+            &output,
+            "cached-test",
+            Arc::new(AtomicBool::new(false)),
+            Some(info),
+        )
+        .await
+        .unwrap();
+        assert!(output.exists());
+
+        fs::write(directory.path().join("parts/0.key"), [0x22u8; 16]).unwrap();
+        assert!(!cache.is_current(&playlist));
+        fs::write(directory.path().join("parts/0.key"), [0x11u8; 16]).unwrap();
+        let segment = directory.path().join("parts/000.ts");
+        OpenOptions::new()
+            .append(true)
+            .open(segment)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+        assert!(!cache.is_current(&playlist));
     }
 
     #[tokio::test]

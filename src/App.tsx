@@ -167,7 +167,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand-mark"><FilmIcon size={23} /></div>
         <div className="brand-copy"><strong>M3U8 转换器</strong><span>本地视频，安心转换</span></div>
-        <span className="version">V0.2.1</span>
+        <span className="version">V0.2.2</span>
       </header>
 
       <main className="main-content">
