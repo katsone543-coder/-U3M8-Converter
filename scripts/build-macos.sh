@@ -12,7 +12,15 @@ npm run prepare:binaries
 python3 scripts/generate-icon.py
 
 icon_temp="$(mktemp -d)"
-trap 'rm -rf "$icon_temp"' EXIT
+dmg_mount=""
+cleanup() {
+  if [[ -n "$dmg_mount" ]]; then
+    hdiutil detach "$dmg_mount" >/dev/null 2>&1 || true
+    rm -rf "$dmg_mount"
+  fi
+  rm -rf "$icon_temp"
+}
+trap cleanup EXIT
 iconset="$icon_temp/App.iconset"
 mkdir "$iconset"
 for size in 16 32 128 256 512; do
@@ -27,7 +35,11 @@ iconutil -c icns "$iconset" -o src-tauri/icons/icon.icns
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri -- build --bundles dmg --no-sign
 
-app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+dmg_path="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+test -n "$dmg_path"
+dmg_mount="$(mktemp -d)"
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$dmg_mount" "$dmg_path"
+app_path="$(find "$dmg_mount" -maxdepth 1 -name '*.app' -print -quit)"
 test -n "$app_path"
 test -x "$app_path/Contents/MacOS/ffmpeg"
 test -x "$app_path/Contents/MacOS/ffprobe"
@@ -35,4 +47,4 @@ test -x "$app_path/Contents/MacOS/ffprobe"
 "$app_path/Contents/MacOS/ffprobe" -version >/dev/null
 
 echo "DMG 文件："
-find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print
+printf '%s\n' "$dmg_path"
