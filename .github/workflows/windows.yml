@@ -1,0 +1,27 @@
+name: Windows 构建验证
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 安装 Rust
+        run: rustup default stable
+      - name: 测试并打包
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3u8-converter-windows-x64
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

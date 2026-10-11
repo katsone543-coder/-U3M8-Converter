@@ -14,6 +14,16 @@ npm run tauri -- dev
 
 Windows 当前提供 x64 构建。macOS 在 Apple Silicon 和 Intel 机器上分别执行 `npm run prepare:binaries`，可生成对应架构的随包二进制文件。
 
+## Windows 11 打包
+
+在 Windows 11 x64 的 PowerShell 中运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+```
+
+脚本会安装依赖、准备 FFmpeg / FFprobe、运行真实 TS 转换测试，并生成当前用户安装的 `.exe` 安装包。安装包位于 `src-tauri/target/release/bundle/nsis/`，无需单独安装 FFmpeg。GitHub Actions 的 Windows 工作流也会上传安装包。当前版本未进行代码签名，Windows 首次安装时可能显示发布者未知提示。
+
 ## 测试
 
 ```bash
