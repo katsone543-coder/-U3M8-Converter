@@ -90,11 +90,17 @@ fn tool_path(name: &str) -> Result<PathBuf, String> {
     Err(format!("缺少随应用分发的 {name} 程序，请重新安装应用。"))
 }
 
+fn tool_command(name: &str) -> Result<Command, String> {
+    let mut command = Command::new(tool_path(name)?);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    Ok(command)
+}
+
 const PROBE_ENTRIES: &str = "format=duration:stream=codec_type,codec_name,width,height,channels,sample_rate,nb_read_packets";
 
 async fn probe(path: &Path, count_packets: bool) -> Result<Value, String> {
-    let binary = tool_path("ffprobe")?;
-    let mut command = Command::new(binary);
+    let mut command = tool_command("ffprobe")?;
     command.args(["-v", "error", "-show_entries", PROBE_ENTRIES, "-of", "json"]);
     if count_packets {
         command.arg("-count_packets");
@@ -134,33 +140,45 @@ async fn probe_encrypted_segment(
         .to_string_lossy()
         .replace('\\', "/");
     let iv_hex = hex_bytes(&encryption.iv_for_segment(index));
-    let output = Command::new(tool_path("ffprobe")?)
-        .current_dir(ffmpeg_path(base))
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            "file,crypto",
-            "-decryption_key",
-            key_hex,
-            "-decryption_iv",
-            &iv_hex,
-            "-f",
-            "mpegts",
-            "-count_packets",
-            "-show_entries",
-            PROBE_ENTRIES,
-            "-of",
-            "json",
-        ])
-        .arg(format!("crypto:{relative}"))
-        .output()
-        .await
-        .map_err(|_| "无法启动视频检测程序，请重新安装应用。".to_string())?;
-    if !output.status.success() {
-        return Err("AES-128 密钥错误，或视频片段无法解密/读取。".into());
+    for _ in 0..2 {
+        let mut command = tool_command("ffprobe")?;
+        let output = command
+            .current_dir(ffmpeg_path(base))
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,crypto",
+                "-decryption_key",
+                key_hex,
+                "-decryption_iv",
+                &iv_hex,
+                "-f",
+                "mpegts",
+                "-count_packets",
+                "-show_entries",
+                PROBE_ENTRIES,
+                "-of",
+                "json",
+            ])
+            .arg(format!("crypto:{relative}"))
+            .output()
+            .await
+            .map_err(|_| "无法启动视频检测程序，请重新安装应用。".to_string())?;
+        if output.status.success() {
+            if let Ok(data) = serde_json::from_slice::<Value>(&output.stdout) {
+                if video_stream(&data)
+                    .and_then(|stream| stream.get("nb_read_packets"))
+                    .and_then(Value::as_str)
+                    .and_then(|count| count.parse::<u64>().ok())
+                    .is_some_and(|count| count > 0)
+                {
+                    return Ok(data);
+                }
+            }
+        }
     }
-    serde_json::from_slice(&output.stdout).map_err(|_| "FFprobe 返回了无效的视频信息。".to_string())
+    Err("视频片段无法解密或读取，请检查密钥、片段文件及文件占用情况。".into())
 }
 
 fn video_stream(value: &Value) -> Option<&Value> {
@@ -403,8 +421,7 @@ async fn convert_to_temp<F: Fn(ProgressEvent)>(
     encrypted: bool,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let binary = tool_path("ffmpeg")?;
-    let mut command = Command::new(binary);
+    let mut command = tool_command("ffmpeg")?;
     command.args([
         "-hide_banner",
         "-loglevel",
