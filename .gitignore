@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.npm-cache/
+.cargo/
+.rustup/
+.tools/
+rustup-init.exe
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/icons/icon.icns
+tests/fixtures/generated/

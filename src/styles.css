@@ -1,0 +1,89 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #182746;
+  background: #f6f8fc;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 620px; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.topbar { height: 76px; display: flex; align-items: center; gap: 13px; padding: 0 42px; background: #fff; border-bottom: 1px solid #e8edf5; }
+.brand-mark { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; color: #fff; background: linear-gradient(145deg, #3266ef, #2148ba); box-shadow: 0 6px 14px #3866d327; }
+.brand-copy { display: flex; flex-direction: column; gap: 2px; }
+.brand-copy strong { font-size: 15px; line-height: 1.2; letter-spacing: .01em; }
+.brand-copy span { font-size: 11px; color: #8793aa; }
+.version { margin-left: auto; padding: 5px 9px; border-radius: 6px; background: #f0f4fc; color: #6580b4; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+
+.main-content { width: min(100% - 80px, 690px); margin: 0 auto; padding: 43px 0 34px; flex: 1; }
+.intro { text-align: center; margin-bottom: 31px; }
+.eyebrow { display: inline-flex; gap: 7px; align-items: center; color: #3862bf; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.eyebrow-dot { width: 6px; height: 6px; border-radius: 50%; background: #4e79eb; }
+.intro h1 { font-size: 30px; line-height: 1.25; margin: 13px 0 9px; letter-spacing: -.035em; font-weight: 750; }
+.intro p { margin: 0; color: #7b8ba5; font-size: 13px; }
+
+.drop-card { min-height: 173px; border: 1.5px dashed #b8c8e9; border-radius: 15px; background: #fff; display: flex; align-items: center; padding: 25px 31px; gap: 21px; box-shadow: 0 8px 26px #1b3a7808; transition: border-color .18s, background .18s, transform .18s; }
+.drop-card.is-dragging { border-color: #3970ef; background: #edf4ff; transform: scale(1.01); }
+.drop-card.has-file { border-style: solid; border-color: #d9e3f2; }
+.drop-symbol { width: 74px; height: 74px; flex: 0 0 auto; border-radius: 17px; display: grid; place-items: center; color: #4671e6; background: linear-gradient(145deg, #eaf0ff, #f6f8ff); }
+.drop-copy { min-width: 0; flex: 1; }
+.drop-copy h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 8px; font-size: 17px; line-height: 1.35; font-weight: 690; }
+.drop-copy p { margin: 0; color: #8b99ae; font-size: 12px; line-height: 1.5; }
+.button { border: 0; border-radius: 9px; font-weight: 650; white-space: nowrap; transition: transform .16s, background .16s, box-shadow .16s; }
+.button:not(:disabled):hover { transform: translateY(-1px); }
+.button:focus-visible, input:focus-visible { outline: 3px solid #b2c7ff; outline-offset: 2px; }
+.button-secondary { padding: 11px 17px; color: #2e61cf; background: #eaf0ff; font-size: 12px; }
+.button-secondary:hover { background: #dde8ff; }
+.button-quiet { padding: 10px 15px; color: #3565cc; background: #edf3ff; font-size: 12px; }
+.button-quiet:hover { background: #e0eaff; }
+.button-primary { min-width: 166px; padding: 13px 22px; color: #fff; background: #315ed4; font-size: 13px; box-shadow: 0 6px 15px #315ed42b; }
+.button-primary:hover { background: #254fc2; }
+.button-primary:disabled { color: #9ca9bd; background: #e5eaf2; box-shadow: none; }
+.button-primary span { margin-left: 9px; font-size: 17px; vertical-align: -1px; }
+.button-danger { padding: 12px 20px; color: #b34952; background: #fff1f2; font-size: 13px; }
+.button-danger:disabled { opacity: .55; }
+
+.details-card, .progress-card { margin-top: 17px; padding: 25px 27px 27px; border: 1px solid #e5ebf4; border-radius: 15px; background: #fff; box-shadow: 0 8px 26px #1b3a7807; }
+.section-heading, .output-heading, .progress-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-heading h2 { margin: 0; font-size: 14px; }
+.verified { color: #219365; font-size: 11px; font-weight: 630; }
+.verified span { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 5px; border-radius: 50%; background: #dff7eb; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 24px; }
+.stats > div { display: flex; flex-direction: column; gap: 8px; }
+.stat-label { color: #92a0b5; font-size: 11px; }
+.stats strong { color: #243556; font-size: 15px; font-weight: 680; }
+.separator { height: 1px; background: #edf0f6; margin: 25px 0 21px; }
+.output-heading label { font-size: 13px; font-weight: 670; }
+.output-heading span { color: #9aa7ba; font-size: 11px; }
+.output-row { display: flex; gap: 9px; margin-top: 11px; }
+.output-row input { min-width: 0; flex: 1; padding: 10px 12px; border: 1px solid #e2e8f1; border-radius: 8px; color: #596d8e; background: #f8faff; font-size: 12px; text-overflow: ellipsis; }
+
+.progress-card { padding: 20px 24px; }
+.progress-header strong { font-size: 13px; }
+.progress-header span { color: #3d69d9; font-size: 13px; font-weight: 720; }
+.progress-track { height: 8px; overflow: hidden; border-radius: 50px; background: #e9effb; margin-top: 15px; }
+.progress-track > div { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4277ed, #6299ff); transition: width .18s; }
+.progress-card p { margin: 10px 0 0; color: #9ba8ba; font-size: 11px; }
+.message { display: flex; align-items: center; gap: 9px; margin-top: 15px; padding: 12px 15px; border-radius: 9px; font-size: 12px; line-height: 1.5; }
+.message > span { width: 17px; height: 17px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; font-size: 11px; font-weight: 750; }
+.message.error { color: #a93e4d; background: #fff0f1; }
+.message.error > span { color: #fff; background: #d96874; }
+.message.success { color: #25764f; background: #eaf8f0; }
+.message.success > span { color: #fff; background: #45a975; }
+.message.neutral { color: #526685; background: #eaf0fa; }
+.actions { display: flex; justify-content: flex-end; margin-top: 24px; }
+.footer { display: flex; align-items: center; justify-content: center; gap: 17px; min-height: 47px; color: #9aa8bc; font-size: 10px; }
+.footer span + span::before { content: "·"; margin-right: 17px; }
+
+@media (max-width: 700px) {
+  .topbar { padding: 0 24px; }
+  .main-content { width: calc(100% - 48px); }
+  .drop-card { padding: 22px; gap: 15px; }
+  .drop-symbol { width: 58px; height: 58px; }
+}

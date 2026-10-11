@@ -1,0 +1,25 @@
+[package]
+name = "m3u8-converter"
+version = "0.1.0"
+description = "Local M3U8 to MP4 converter"
+authors = ["M3U8 Converter contributors"]
+edition = "2021"
+
+[lib]
+name = "m3u8_converter_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

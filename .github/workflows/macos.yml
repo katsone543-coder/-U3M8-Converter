@@ -1,0 +1,32 @@
+name: macOS 构建验证
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 安装 Rust
+        run: |
+          rustup default stable
+          rustc --version
+      - name: 测试并打包
+        run: bash scripts/build-macos.sh
+      - name: 上传 DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3u8-converter-${{ runner.arch }}
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
